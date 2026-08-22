@@ -5,8 +5,8 @@ numbered PNG into an output folder (default: ``video_input``), and writes the
 ``images.csv`` timestamp index that :class:`esim.data_provider.FolderImageSource`
 expects.
 
-    python tools/premiere_video.py -i video/video.mp4
-    python tools/premiere_video.py -i video/video.mp4 -o video_input --framerate 240
+    python tools/prepare_video.py -i video/video.mp4
+    python tools/prepare_video.py -i video/video.mp4 -o video_input --framerate 240
 """
 
 import argparse

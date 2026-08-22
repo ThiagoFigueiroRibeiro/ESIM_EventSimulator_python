@@ -5,7 +5,7 @@ Como preparar um vídeo (`.mp4` e outros formatos que o OpenCV decodifica) para 
 ## 1. Extrair os frames
 
 ```bash
-python tools/premiere_video.py -i video/video.mp4
+python tools/prepare_video.py -i video/video.mp4
 ```
 
 Isso cria a pasta `video_input/` com:

@@ -50,6 +50,17 @@ def write_event_frames(
     if not len(events):
         raise ValueError("no events to render")
 
+    def hex_rgb(value: str) -> np.ndarray:
+        value = value.lstrip("#")
+        return np.array([int(value[i:i + 2], 16) for i in (0, 2, 4)], dtype=np.float32)
+
+    # Easy-to-change color palette (RGB)
+    COLORS = {
+        "background": hex_rgb("#1E2636"),
+        "positive": hex_rgb("#FAFFFF"),
+        "negative": hex_rgb("#4F7BB6"),
+    }
+
     if len(events) > 1 and np.any(events["t"][1:] < events["t"][:-1]):
         events = np.sort(events, order="t", kind="stable")
 
@@ -63,9 +74,39 @@ def write_event_frames(
         end = start + window_ns
         left = int(np.searchsorted(events["t"], start, side="left"))
         right = int(np.searchsorted(events["t"], end, side="left"))
+
         accumulated = accumulate(events[left:right], shape=shape)
-        rgb = np.rint(to_rgb(accumulated) * 255.0).astype(np.uint8)
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+        # Build RGB image using the local palette
+        rgb = np.full((shape[0], shape[1], 3), COLORS["background"], dtype=np.float32)
+
+        values = np.asarray(accumulated, dtype=np.float32)
+        if values.size:
+            if values.shape != shape:
+                if values.size != shape[0] * shape[1]:
+                    raise ValueError(
+                        f"accumulate() returned shape {values.shape}, expected {shape}"
+                    )
+                values = values.reshape(shape)
+
+            max_abs = float(np.max(np.abs(values)))
+            if max_abs > 0:
+                strength = np.abs(values) / max_abs
+                positive = values > 0
+                negative = values < 0
+
+                if np.any(positive):
+                    rgb[positive] = (
+                        COLORS["background"]
+                        + strength[positive][:, None] * (COLORS["positive"] - COLORS["background"])
+                    )
+                if np.any(negative):
+                    rgb[negative] = (
+                        COLORS["background"]
+                        + strength[negative][:, None] * (COLORS["negative"] - COLORS["background"])
+                    )
+
+        bgr = cv2.cvtColor(np.rint(rgb).astype(np.uint8), cv2.COLOR_RGB2BGR)
         name = f"frame_{index:06d}.png"
         if not cv2.imwrite(os.path.join(output, name), bgr):
             raise IOError(f"could not write {name} to {output}")
