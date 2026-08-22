@@ -102,7 +102,7 @@ Dois utilitários são fornecidos:
   ```
 - **`tools/premiere_video.py`** extrai os frames de um vídeo (`.mp4` e outros formatos suportados pelo OpenCV) e já gera o `images.csv` correspondente:
   ```bash
-  python tools/premiere_video.py -i video.mp4 -o video_input
+  python tools/premiere_video.py -i video/video.mp4 -o video_input
   ```
   Veja [doc/converter_video.md](doc/converter_video.md) para o passo a passo completo, do vídeo até os frames de evento.
 

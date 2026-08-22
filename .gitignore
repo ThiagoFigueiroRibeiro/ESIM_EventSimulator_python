@@ -1,1 +1,20 @@
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local inputs and generated outputs
 /video_input/
+/demo_out/
+/resultado_video*/
+/.publish/
+/.codex_test_tmp/
+
+# Operating-system files
+.DS_Store
+Thumbs.db

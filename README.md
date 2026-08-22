@@ -102,7 +102,7 @@ Two helpers are provided:
   ```
 - **`tools/premiere_video.py`** extracts frames from a video file (`.mp4` and other OpenCV-decodable formats) and writes the matching `images.csv`:
   ```bash
-  python tools/premiere_video.py -i video.mp4 -o video_input
+  python tools/premiere_video.py -i video/video.mp4 -o video_input
   ```
   See [doc/converter_video.md](doc/converter_video.md) (in Portuguese) for the full video-to-event-frames walkthrough.
 
