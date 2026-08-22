@@ -1,5 +1,5 @@
 @echo off
-call conda activate vision
+call conda activate esim
 
 python tools/premiere_video.py -i video.mp4 -o video_input
 python -m esim.cli --input video_input --output video_out --contrast-threshold 0.2
