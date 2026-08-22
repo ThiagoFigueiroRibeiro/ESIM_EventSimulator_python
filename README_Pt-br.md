@@ -50,7 +50,7 @@ images.csv + frames ──▶ FolderImageSource ──▶ EventSimulator ──�
 | --- | --- |
 | [`esim/`](esim) | O pacote do simulador: tipos, simuladores de evento/câmera, provedor de dados, CLI, writers, visualização |
 | [`tests/`](tests) | Testes unitários e ponta a ponta (`unittest`) |
-| [`tools/`](tools) | Scripts independentes: gerador de sequência de teste sintética, construtor de `images.csv` |
+| [`tools/`](tools) | Scripts independentes: gerador de sequência de teste sintética, construtor de `images.csv`, extrator de frames de vídeo |
 | [`requirements.txt`](requirements.txt) | As três dependências de execução |
 
 ## Requisitos
@@ -100,6 +100,11 @@ Dois utilitários são fornecidos:
   ```bash
   python tools/make_test_sequence.py --output demo_seq --frames 200
   ```
+- **`tools/premiere_video.py`** extrai os frames de um vídeo (`.mp4` e outros formatos suportados pelo OpenCV) e já gera o `images.csv` correspondente:
+  ```bash
+  python tools/premiere_video.py -i video.mp4 -o video_input
+  ```
+  Veja [doc/converter_video.md](doc/converter_video.md) para o passo a passo completo, do vídeo até os frames de evento.
 
 ## Executando o simulador
 
@@ -154,6 +159,17 @@ python -m esim.viz demo_out --save-to preview.png   # sem interface gráfica, gr
 ```
 
 Isso renderiza a imagem de eventos acumulados (azul = predominância de ON, vermelho = predominância de OFF) ao lado do gráfico de taxa de eventos ao longo do tempo.
+
+Para transformar `events.txt` em uma sequência de frames (azul = ON, vermelho = OFF),
+agrupando os eventos em janelas de 10 ms:
+
+```bash
+python -m esim.event_frames demo_out/events.txt --output demo_out/event_frames --window-ms 10
+```
+
+O comando grava `frame_000000.png`, `frame_000001.png`, etc., além de um
+`images.csv` com o timestamp de cada frame. Use uma janela menor para mais detalhe
+temporal ou uma janela maior para acumular mais eventos em cada imagem.
 
 ## Usando como biblioteca
 

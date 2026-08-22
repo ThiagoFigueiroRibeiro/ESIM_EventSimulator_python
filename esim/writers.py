@@ -32,6 +32,44 @@ def load_events_npz(path: str) -> np.ndarray:
     return events
 
 
+def load_events_txt(path: str) -> np.ndarray:
+    """Load ``t x y pol`` events from a text export.
+
+    Timestamps in the text file are expressed in seconds and converted back to
+    integer nanoseconds. Blank lines and lines beginning with ``#`` are ignored.
+    """
+    rows = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            columns = stripped.split()
+            if len(columns) != 4:
+                raise ValueError(f"{path}:{line_number}: expected 't x y pol'")
+            try:
+                t_s = float(columns[0])
+                x = int(columns[1])
+                y = int(columns[2])
+                pol = int(columns[3])
+            except ValueError as exc:
+                raise ValueError(f"{path}:{line_number}: invalid event") from exc
+            if not np.isfinite(t_s) or t_s < 0:
+                raise ValueError(f"{path}:{line_number}: timestamp must be non-negative")
+            if not (0 <= x <= np.iinfo(np.uint16).max) or not (
+                0 <= y <= np.iinfo(np.uint16).max
+            ):
+                raise ValueError(f"{path}:{line_number}: coordinates are out of range")
+            if pol not in (0, 1):
+                raise ValueError(f"{path}:{line_number}: polarity must be 0 or 1")
+            rows.append((x, y, int(round(t_s * NS_PER_S)), bool(pol)))
+
+    events = np.asarray(rows, dtype=EVENT_DTYPE)
+    if len(events) > 1 and np.any(events["t"][1:] < events["t"][:-1]):
+        events = np.sort(events, order="t", kind="stable")
+    return events
+
+
 def save_events_txt(path: str, events: np.ndarray) -> None:
     """Save events as text, one ``t x y pol`` per line with ``t`` in seconds.
 
