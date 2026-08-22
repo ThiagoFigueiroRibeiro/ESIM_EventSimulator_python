@@ -10,7 +10,10 @@ env/
 
 # Local inputs and generated outputs
 /video_input/
+/demo_in/
 /demo_out/
+/video_input/
+/video_out/
 /resultado_video*/
 /.publish/
 /.codex_test_tmp/
@@ -18,3 +21,4 @@ env/
 # Operating-system files
 .DS_Store
 Thumbs.db
+video.mp4
