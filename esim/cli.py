@@ -79,7 +79,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     out = parser.add_argument_group("output")
-    out.add_argument("--no-txt", action="store_true", help="skip the events.txt export")
     out.add_argument("--quiet", action="store_true", help="suppress progress output")
     return parser
 
@@ -135,8 +134,6 @@ def run(args: argparse.Namespace) -> int:
 
     npz_path = os.path.join(args.output, "events.npz")
     save_events_npz(npz_path, events)
-    if not args.no_txt:
-        save_events_txt(os.path.join(args.output, "events.txt"), events)
     if frame_writer is not None:
         frame_writer.close()
 
