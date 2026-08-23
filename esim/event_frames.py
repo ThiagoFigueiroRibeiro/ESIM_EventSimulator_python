@@ -143,9 +143,9 @@ def write_event_frames(
         return np.array([int(value[i:i + 2], 16) for i in (0, 2, 4)], dtype=np.float32)
 
     # Palette defined in RGB, then converted to BGR for OpenCV.
-    background_bgr = hex_rgb("#1E2636")[::-1].copy()
-    positive_bgr = hex_rgb("#FAFFFF")[::-1].copy()
-    negative_bgr = hex_rgb("#4F7BB6")[::-1].copy()
+    background_bgr = hex_rgb("#292929")[::-1].copy()
+    positive_bgr = hex_rgb("#FEB400")[::-1].copy()
+    negative_bgr = hex_rgb("#087CEA")[::-1].copy()
 
     background_u8 = np.rint(background_bgr).astype(np.uint8)
     pos_delta = positive_bgr - background_bgr
