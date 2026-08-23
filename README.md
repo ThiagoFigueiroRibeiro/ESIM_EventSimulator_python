@@ -31,7 +31,7 @@ In practice this means: **you supply the images** (rendered however you like, or
 
 ## Architecture
 
-```
+```text
 images.csv + frames ──▶ FolderImageSource ──▶ EventSimulator ──▶ events.npz / events.txt
                                           └──▶ CameraSimulator ──▶ frames/ (blurred PNGs)
 ```
@@ -72,7 +72,7 @@ pip install -r requirements.txt
 
 The simulator reads a folder containing an `images.csv` index and the image files it references:
 
-```
+```text
 seq/
 ├── images.csv
 ├── frame_000000.png
@@ -82,7 +82,7 @@ seq/
 
 `images.csv` has one `timestamp_ns,filename` pair per line (lines starting with `#` or `%` are comments):
 
-```
+```text
 # timestamp_ns, image
 0,frame_000000.png
 1000000,frame_000001.png
@@ -142,11 +142,11 @@ python -m esim.cli @cfg/my_run.conf
 
 ### Output
 
-```
+```text
 demo_out/
 ├── events.npz          # x, y, t (ns), pol — see esim.writers.load_events_npz
-├── events.txt           # "t x y pol" per line, t in seconds (omit with --no-txt)
-└── frames/              # blurred frames + images.csv (omit with --no-blurred-frames)
+├── events.txt          # "t x y pol" per line, t in seconds (omit with --no-txt)
+└── frames/             # blurred frames + images.csv (omit with --no-blurred-frames)
 ```
 
 ## Visualizing results
@@ -158,15 +158,26 @@ python -m esim.viz demo_out --save-to preview.png   # headless, writes a PNG ins
 
 This renders the accumulated event image (blue = net ON, red = net OFF) next to the event-rate-over-time curve.
 
-To convert `events.txt` into an event-frame sequence (blue = ON, red = OFF),
-accumulating events in 10 ms windows:
+To convert an event stream into an event-frame sequence (blue = ON, red = OFF),
+accumulating events in fixed windows:
 
 ```bash
-python -m esim.event_frames demo_out/events.txt --output demo_out/event_frames --window-ms 10
+python -m esim.event_frames demo_out/events.npz --output demo_out/event_frames --window-ms 10
 ```
 
-This writes numbered PNGs plus an `images.csv` timestamp index. Use a shorter window
-for finer temporal detail or a longer one to accumulate more events per image.
+Or, if you know the source video FPS and want the window size to be half a frame period:
+
+```bash
+python -m esim.event_frames demo_out/events.npz --output demo_out/event_frames --fps 25
+```
+
+This uses:
+
+- `window_ms = 1000 / (2 * fps)`
+
+So for `25 fps`, the window becomes `20 ms`.
+
+This writes numbered PNGs plus an `images.csv` timestamp index. Use a shorter window for finer temporal detail or a longer one to accumulate more events per image.
 
 ## Using it as a library
 
