@@ -12,8 +12,6 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from .viz import accumulate
-
 NS_PER_MS = 1_000_000
 
 
@@ -109,11 +107,30 @@ def infer_shape(events: np.ndarray, width: Optional[int], height: Optional[int])
     return height, width
 
 
+def accumulate_window(
+    flat_indices: np.ndarray,
+    weights: np.ndarray,
+    shape: Tuple[int, int],
+) -> np.ndarray:
+    """Accumulate events into a 2D image using np.bincount.
+
+    Uses +1 for positive polarity and -1 for negative polarity.
+    """
+    height, width = shape
+    if flat_indices.size == 0:
+        return np.zeros(shape, dtype=np.float32)
+
+    acc = np.bincount(flat_indices, weights=weights, minlength=height * width)
+    return acc.reshape(shape)
+
+
 def write_event_frames(
     events: np.ndarray,
     output: str,
     window_ns: int,
     shape: Tuple[int, int],
+    assume_sorted: bool = False,
+    png_compression: int = 0,
 ) -> int:
     """Group events into fixed time windows and write PNG frames."""
     if window_ns <= 0:
@@ -125,70 +142,92 @@ def write_event_frames(
         value = value.lstrip("#")
         return np.array([int(value[i:i + 2], 16) for i in (0, 2, 4)], dtype=np.float32)
 
-    # Easy-to-change color palette (RGB)
-    COLORS = {
-        "background": hex_rgb("#1E2636"),
-        "positive": hex_rgb("#FAFFFF"),
-        "negative": hex_rgb("#4F7BB6"),
-    }
+    # Palette defined in RGB, then converted to BGR for OpenCV.
+    background_bgr = hex_rgb("#1E2636")[::-1].copy()
+    positive_bgr = hex_rgb("#FAFFFF")[::-1].copy()
+    negative_bgr = hex_rgb("#4F7BB6")[::-1].copy()
 
-    if len(events) > 1 and np.any(events["t"][1:] < events["t"][:-1]):
-        events = np.sort(events, order="t", kind="stable")
+    background_u8 = np.rint(background_bgr).astype(np.uint8)
+    pos_delta = positive_bgr - background_bgr
+    neg_delta = negative_bgr - background_bgr
+
+    # Pull fields into separate arrays for better locality and faster processing.
+    x = np.asarray(events["x"])
+    y = np.asarray(events["y"])
+    t = np.asarray(events["t"])
+    pol = np.asarray(events["pol"])
+
+    # Sort once if needed. This is much cheaper than per-frame binary search.
+    if not assume_sorted and len(t) > 1 and np.any(t[1:] < t[:-1]):
+        order = np.argsort(t, kind="stable")
+        x = x[order]
+        y = y[order]
+        t = t[order]
+        pol = pol[order]
+
+    # Precompute flat pixel indices and polarity weights once.
+    height, width = shape
+    flat_indices = y.astype(np.int64, copy=False) * width + x.astype(np.int64, copy=False)
+    weights = np.where(pol > 0, 1, -1).astype(np.int8, copy=False)
 
     os.makedirs(output, exist_ok=True)
 
-    first_window = (int(events["t"][0]) // window_ns) * window_ns
-    frame_count = (int(events["t"][-1]) - first_window) // window_ns + 1
-    entries = []
+    first_window = (int(t[0]) // window_ns) * window_ns
+    frame_count = (int(t[-1]) - first_window) // window_ns + 1
 
-    for index in range(frame_count):
-        start = first_window + index * window_ns
-        end = start + window_ns
+    # Reuse the frame buffer for each output image.
+    frame = np.empty((height, width, 3), dtype=np.uint8)
+    flat_frame = frame.reshape(-1, 3)
 
-        left = int(np.searchsorted(events["t"], start, side="left"))
-        right = int(np.searchsorted(events["t"], end, side="left"))
+    csv_path = os.path.join(output, "images.csv")
+    with open(csv_path, "w", encoding="utf-8") as csv_handle:
+        csv_handle.write("# timestamp_ns, image\n")
 
-        accumulated = accumulate(events[left:right], shape=shape)
+        left = 0
+        right = 0
+        n = len(t)
 
-        rgb = np.full((shape[0], shape[1], 3), COLORS["background"], dtype=np.float32)
+        for index in range(frame_count):
+            start = first_window + index * window_ns
+            end = start + window_ns
 
-        values = np.asarray(accumulated, dtype=np.float32)
-        if values.size:
-            if values.shape != shape:
-                if values.size != shape[0] * shape[1]:
-                    raise ValueError(
-                        f"accumulate() returned shape {values.shape}, expected {shape}"
-                    )
-                values = values.reshape(shape)
+            # One-pass monotonic boundary advancement.
+            while left < n and t[left] < start:
+                left += 1
+            while right < n and t[right] < end:
+                right += 1
 
-            max_abs = float(np.max(np.abs(values)))
-            if max_abs > 0:
-                strength = np.abs(values) / max_abs
-                positive = values > 0
-                negative = values < 0
+            accumulated = accumulate_window(
+                flat_indices[left:right],
+                weights[left:right],
+                shape,
+            )
 
-                if np.any(positive):
-                    rgb[positive] = (
-                        COLORS["background"]
-                        + strength[positive][:, None] * (COLORS["positive"] - COLORS["background"])
-                    )
-                if np.any(negative):
-                    rgb[negative] = (
-                        COLORS["background"]
-                        + strength[negative][:, None] * (COLORS["negative"] - COLORS["background"])
-                    )
+            # Start with the background.
+            frame[:] = background_u8
 
-        bgr = cv2.cvtColor(np.rint(rgb).astype(np.uint8), cv2.COLOR_RGB2BGR)
-        name = f"frame_{index:06d}.png"
-        if not cv2.imwrite(os.path.join(output, name), bgr):
-            raise IOError(f"could not write {name} to {output}")
+            values = np.asarray(accumulated)
+            flat_values = values.reshape(-1)
 
-        entries.append(f"{start},{name}")
+            active_idx = np.flatnonzero(flat_values)
+            if active_idx.size:
+                active_vals = flat_values[active_idx].astype(np.float32, copy=False)
+                max_abs = float(np.max(np.abs(active_vals)))
 
-    with open(os.path.join(output, "images.csv"), "w", encoding="utf-8") as handle:
-        handle.write("# timestamp_ns, image\n")
-        for entry in entries:
-            handle.write(entry + "\n")
+                if max_abs > 0.0:
+                    strengths = np.abs(active_vals) / max_abs
+
+                    # Positive pixels use the positive delta; negative pixels use the negative delta.
+                    deltas = np.where(active_vals[:, None] > 0, pos_delta, neg_delta)
+                    colors = background_bgr + strengths[:, None] * deltas
+                    flat_frame[active_idx] = np.rint(colors).astype(np.uint8)
+
+            name = f"frame_{index:06d}.png"
+            path = os.path.join(output, name)
+            if not cv2.imwrite(path, frame, [cv2.IMWRITE_PNG_COMPRESSION, int(png_compression)]):
+                raise IOError(f"could not write {name} to {output}")
+
+            csv_handle.write(f"{start},{name}\n")
 
     return frame_count
 
@@ -200,18 +239,47 @@ def main(argv=None) -> int:
     )
     parser.add_argument("events", help="path to events.npz (or its containing folder)")
     parser.add_argument("-o", "--output", required=True, help="folder for the PNG sequence")
-    parser.add_argument(
+
+    time_group = parser.add_mutually_exclusive_group()
+    time_group.add_argument(
         "--window-ms",
         type=float,
         default=10.0,
         help="events accumulated per frame in milliseconds (default: 10)",
     )
+    time_group.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="video FPS; window size becomes half a frame period: 1000 / (2 * fps) ms",
+    )
+
     parser.add_argument("--width", type=int, default=None, help="sensor width (inferred by default)")
     parser.add_argument("--height", type=int, default=None, help="sensor height (inferred by default)")
+    parser.add_argument(
+        "--assume-sorted",
+        action="store_true",
+        help="skip timestamp sorting/checking; use only if events are already sorted by t",
+    )
+    parser.add_argument(
+        "--png-compression",
+        type=int,
+        default=0,
+        help="PNG compression level (0 fastest, 9 smallest; default: 0)",
+    )
     args = parser.parse_args(argv)
 
-    if args.window_ms <= 0:
-        parser.error("--window-ms must be positive")
+    if args.fps is not None:
+        if args.fps <= 0:
+            parser.error("--fps must be positive")
+        window_ms = 1000.0 / (2.0 * args.fps)
+    else:
+        if args.window_ms <= 0:
+            parser.error("--window-ms must be positive")
+        window_ms = args.window_ms
+
+    if not (0 <= args.png_compression <= 9):
+        parser.error("--png-compression must be in range 0..9")
 
     path = args.events
     if os.path.isdir(path):
@@ -223,14 +291,22 @@ def main(argv=None) -> int:
     count = write_event_frames(
         events,
         args.output,
-        int(round(args.window_ms * NS_PER_MS)),
+        int(round(window_ms * NS_PER_MS)),
         shape,
+        assume_sorted=args.assume_sorted,
+        png_compression=args.png_compression,
     )
 
-    print(
-        f"Wrote {count} event frames ({shape[1]}x{shape[0]}) "
-        f"with {args.window_ms:g} ms windows to {args.output}"
-    )
+    if args.fps is not None:
+        print(
+            f"Wrote {count} event frames ({shape[1]}x{shape[0]}) "
+            f"with fps={args.fps:g} -> window={window_ms:g} ms to {args.output}"
+        )
+    else:
+        print(
+            f"Wrote {count} event frames ({shape[1]}x{shape[0]}) "
+            f"with {window_ms:g} ms windows to {args.output}"
+        )
     return 0
 
 
