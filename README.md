@@ -107,7 +107,7 @@ Two helpers are provided:
 ## Running the simulator
 
 ```bash
-python -m esim.cli --input demo_seq --output demo_out --contrast-threshold 0.2
+python -m esim.cli --input video_seq --output video_out --contrast-threshold 0.2
 ```
 
 (The default contrast threshold of `1.0` is tuned for full-range renders; the synthetic demo grating above has a modest contrast, so a lower threshold like `0.2` is needed to actually trigger events. Tune it to match your own image sequence's contrast.)
@@ -143,7 +143,7 @@ python -m esim.cli @cfg/my_run.conf
 ### Output
 
 ```text
-demo_out/
+video_out/
 ├── events.npz          # x, y, t (ns), pol — see esim.writers.load_events_npz
 ├── events.txt          # "t x y pol" per line, t in seconds (omit with --no-txt)
 └── frames/             # blurred frames + images.csv (omit with --no-blurred-frames)
@@ -152,23 +152,25 @@ demo_out/
 ## Visualizing results
 
 ```bash
-python -m esim.viz demo_out/events.npz
-python -m esim.viz demo_out --save-to preview.png   # headless, writes a PNG instead of a window
+python -m esim.viz video_out/events.npz
+python -m esim.viz video_out --save-to accumulated_events.png   # headless, writes a PNG instead of a window
 ```
 
 This renders the accumulated event image (blue = net ON, red = net OFF) next to the event-rate-over-time curve.
+
+![alt text](accumulated_events.png)
 
 To convert an event stream into an event-frame sequence (blue = ON, red = OFF),
 accumulating events in fixed windows:
 
 ```bash
-python -m esim.event_frames demo_out/events.npz --output demo_out/event_frames --window-ms 10
+python -m esim.event_frames video_out/events.npz --output video_out/event_frames --window-ms 10
 ```
 
 Or, if you know the source video FPS and want the window size to be half a frame period:
 
 ```bash
-python -m esim.event_frames demo_out/events.npz --output demo_out/event_frames --fps 25
+python -m esim.event_frames video_out/events.npz --output video_out/event_frames --fps 25
 ```
 
 This uses:
@@ -178,6 +180,16 @@ This uses:
 So for `25 fps`, the window becomes `20 ms`.
 
 This writes numbered PNGs plus an `images.csv` timestamp index. Use a shorter window for finer temporal detail or a longer one to accumulate more events per image.
+
+## Example Video
+
+You can see the ESIM simulator in action with an example video demonstrating event generation:
+
+[![Example Video](https://img.shields.io/badge/Play%20Example-mp4-blue)](example.mp4)
+
+Source: https://www.youtube.com/watch?v=QfDoQwIAaXg
+
+This video shows the transformation from RGB images to simulated event camera output.
 
 ## Using it as a library
 
