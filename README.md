@@ -185,7 +185,7 @@ This writes numbered PNGs plus an `images.csv` timestamp index. Use a shorter wi
 
 You can see the ESIM simulator in action with an example video demonstrating event generation:
 
-[![Example Video](https://img.shields.io/badge/Play%20Example-mp4-blue)](example.mp4)
+![Example gif](example.gif)
 
 Source: https://www.youtube.com/watch?v=QfDoQwIAaXg
 
