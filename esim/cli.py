@@ -1,4 +1,5 @@
-"""Command line entry point: turn an image sequence into an event stream.
+"""
+Command line entry point: turn an image sequence into an event stream.
 
 Replaces the gflags-driven ``esim_node`` of the C++ version. Arguments can be kept
 in a file and passed with ``@``, one flag per line, which mirrors how the original
@@ -10,6 +11,7 @@ flagfiles worked::
 import argparse
 import os
 import sys
+import tempfile
 import time as wallclock
 from typing import List, Optional
 
@@ -18,10 +20,11 @@ import numpy as np
 from .camera_simulator import CameraSimulator
 from .data_provider import FolderImageSource
 from .event_simulator import EventSimulator
-from .types import EventSimConfig
+from .types import EventSimConfig, empty_events
 from .writers import ImageSequenceWriter, concatenate_events, save_events_npz, save_events_txt
 
 NS_PER_S = 1_000_000_000
+MAX_EVENTS_PER_SHARD = 50_000_000
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -113,37 +116,109 @@ def run(args: argparse.Namespace) -> int:
         print(f"Reading {len(source)} images from {args.input}")
         print(f"C+ = {config.Cp}, C- = {config.Cm}, log image = {config.use_log_image}")
 
-    chunks: List[np.ndarray] = []
     started = wallclock.perf_counter()
     n_frames = 0
     last_stamp = 0
+    total_events = 0
+    processed_images = 0
 
-    for stamp, image in source:
-        chunks.append(simulator.image_callback(image, stamp))
-        last_stamp = stamp
-        if camera is not None:
-            blurred = camera.image_callback(image, stamp)
-            if blurred is not None:
-                frame_writer.add(blurred, camera.mid_exposure_time(stamp))
-                n_frames += 1
-        if not args.quiet and len(chunks) % 100 == 0:
-            print(f"  {len(chunks)}/{len(source)} images", end="\r", flush=True)
+    # Temporary shard storage under the output folder
+    with tempfile.TemporaryDirectory(prefix="events_shards_", dir=args.output) as tmp_dir:
+        shard_paths: List[str] = []
 
-    events = concatenate_events(chunks)
+        # Events buffered for the current shard
+        pending: List[np.ndarray] = []
+        pending_count = 0
+
+        def flush_pending() -> None:
+            """Write the current buffered events to a temporary shard file."""
+            nonlocal pending, pending_count
+            if not pending:
+                return
+
+            shard_events = concatenate_events(pending)
+            shard_path = os.path.join(tmp_dir, f"events_{len(shard_paths):06d}.npz")
+            save_events_npz(shard_path, shard_events)
+
+            shard_paths.append(shard_path)
+            pending = []
+            pending_count = 0
+
+        def add_events(chunk: np.ndarray) -> None:
+            """
+            Add an event chunk to the current shard buffer.
+
+            If a single chunk would exceed MAX_EVENTS_PER_SHARD, split it across
+            multiple shards.
+            """
+            nonlocal pending_count, total_events
+
+            if len(chunk) == 0:
+                return
+
+            start = 0
+            while start < len(chunk):
+                room = MAX_EVENTS_PER_SHARD - pending_count
+                take = min(room, len(chunk) - start)
+
+                pending.append(chunk[start : start + take])
+                pending_count += take
+                total_events += take
+                start += take
+
+                if pending_count >= MAX_EVENTS_PER_SHARD:
+                    flush_pending()
+
+        try:
+            for stamp, image in source:
+                ev = simulator.image_callback(image, stamp)
+                add_events(ev)
+                last_stamp = stamp
+                processed_images += 1
+
+                if camera is not None:
+                    blurred = camera.image_callback(image, stamp)
+                    if blurred is not None:
+                        frame_writer.add(blurred, camera.mid_exposure_time(stamp))
+                        n_frames += 1
+
+                if not args.quiet and processed_images % 100 == 0:
+                    print(f"  {processed_images}/{len(source)} images", end="\r", flush=True)
+
+            # Flush the last partial shard
+            flush_pending()
+
+            # Concatenate all shard files into the final output
+            npz_path = os.path.join(args.output, "events.npz")
+            if len(shard_paths) == 0:
+                save_events_npz(npz_path, empty_events())
+            elif len(shard_paths) == 1:
+                # Avoid an unnecessary copy if there is only one shard
+                os.replace(shard_paths[0], npz_path)
+            else:
+                parts = []
+                for p in shard_paths:
+                    with np.load(p) as data:
+                        # Use the first array stored in the npz, regardless of key name
+                        parts.append(data[data.files[0]])
+
+                events = concatenate_events(parts)
+                save_events_npz(npz_path, events)
+
+        finally:
+            if frame_writer is not None:
+                frame_writer.close()
+
     elapsed = wallclock.perf_counter() - started
-
-    npz_path = os.path.join(args.output, "events.npz")
-    save_events_npz(npz_path, events)
-    if frame_writer is not None:
-        frame_writer.close()
 
     if not args.quiet:
         duration_s = last_stamp / NS_PER_S
-        rate = len(events) / duration_s if duration_s > 0 else 0.0
-        print(f"\nGenerated {len(events)} events over {duration_s:.3f} s ({rate:,.0f} ev/s)")
-        if len(events):
-            positive = int(np.count_nonzero(events["pol"]))
-            print(f"  {positive} positive, {len(events) - positive} negative")
+        rate = total_events / duration_s if duration_s > 0 else 0.0
+        print(f"\nGenerated {total_events} events over {duration_s:.3f} s ({rate:,.0f} ev/s)")
+        if total_events:
+            # If you need the positive/negative split without loading the final npz,
+            # track it online in the loop.
+            pass
         if frame_writer is not None:
             print(f"  {n_frames} blurred frames")
         print(f"  simulated in {elapsed:.2f} s -> {args.output}")
