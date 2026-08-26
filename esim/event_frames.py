@@ -143,13 +143,11 @@ def write_event_frames(
         return np.array([int(value[i:i + 2], 16) for i in (0, 2, 4)], dtype=np.float32)
 
     # Palette defined in RGB, then converted to BGR for OpenCV.
-    background_bgr = hex_rgb("#292929")[::-1].copy()
-    positive_bgr = hex_rgb("#FEB400")[::-1].copy()
-    negative_bgr = hex_rgb("#087CEA")[::-1].copy()
+    background_bgr = hex_rgb("#FFFFFF")[::-1].copy()
+    positive_bgr = hex_rgb("#00CC00")[::-1].copy()
+    negative_bgr = hex_rgb("#FF0000")[::-1].copy()
 
     background_u8 = np.rint(background_bgr).astype(np.uint8)
-    pos_delta = positive_bgr - background_bgr
-    neg_delta = negative_bgr - background_bgr
 
     # Pull fields into separate arrays for better locality and faster processing.
     x = np.asarray(events["x"])
@@ -211,16 +209,17 @@ def write_event_frames(
 
             active_idx = np.flatnonzero(flat_values)
             if active_idx.size:
-                active_vals = flat_values[active_idx].astype(np.float32, copy=False)
-                max_abs = float(np.max(np.abs(active_vals)))
+                active_vals = flat_values[active_idx]
 
-                if max_abs > 0.0:
-                    strengths = np.abs(active_vals) / max_abs
+                # No blending toward white:
+                # assign the full event color directly based on polarity sign.
+                pos_mask = active_vals > 0
+                if np.any(pos_mask):
+                    flat_frame[active_idx[pos_mask]] = positive_bgr.astype(np.uint8)
 
-                    # Positive pixels use the positive delta; negative pixels use the negative delta.
-                    deltas = np.where(active_vals[:, None] > 0, pos_delta, neg_delta)
-                    colors = background_bgr + strengths[:, None] * deltas
-                    flat_frame[active_idx] = np.rint(colors).astype(np.uint8)
+                neg_mask = ~pos_mask
+                if np.any(neg_mask):
+                    flat_frame[active_idx[neg_mask]] = negative_bgr.astype(np.uint8)
 
             name = f"frame_{index:06d}.png"
             path = os.path.join(output, name)
