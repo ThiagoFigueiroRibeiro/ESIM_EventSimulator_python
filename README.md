@@ -25,31 +25,38 @@ In practice this means: **you supply the images** (rendered however you like, or
 - Faithful port of the C++ event model: log- or linear-intensity thresholding, separate positive/negative contrast thresholds (C+/C-), additive Gaussian noise on the thresholds, and a per-pixel refractory period
 - Motion-blurred frame synthesis via a finite exposure time, alongside the event stream
 - Simple folder-based input (`images.csv` + image files) and file-based output (`.npz` / `.txt` events, PNG frame sequence)
-- A small, dependency-light Python API (`esim.EventSimulator`, `esim.CameraSimulator`) usable outside the CLI
-- A visualization helper (`esim.viz`) to render the accumulated event image and event-rate plot
+- A small, dependency-light Python API (`esim.EventSimulator`, `esim.CameraSimulator`, `esim.EventSimConfig`) usable outside the CLI
+- Visualization helpers for accumulated event frames and event-rate plots (`esim.viz`)
+- Event-frame export from an event stream (`esim.event_frames`) for visualization or downstream processing
+- A webcam-based pseudo-event demo (`esim.event_frames_from_camera`) that approximates event-camera output in real time
 - Only NumPy, OpenCV, and Matplotlib as dependencies — no ROS, no compiled extensions, runs anywhere Python does (Windows, macOS, Linux)
 
 ## Architecture
 
 ```text
 images.csv + frames ──▶ FolderImageSource ──▶ EventSimulator ──▶ events.npz / events.txt
-                                          └──▶ CameraSimulator ──▶ frames/ (blurred PNGs)
+                                          ├──▶ CameraSimulator ──▶ frames/ (blurred PNGs)
+                                          ├──▶ Viz helpers ──▶ event summary plots
+                                          └──▶ Event-frame exporter ──▶ PNG sequence
 ```
 
 - **`FolderImageSource`** ([esim/data_provider.py](esim/data_provider.py)) reads a stamped image sequence from disk.
 - **`EventSimulator`** ([esim/event_simulator.py](esim/event_simulator.py)) compares the (log-)intensity signal against the contrast thresholds per pixel and emits events, honoring threshold noise and the refractory period.
 - **`CameraSimulator`** ([esim/camera_simulator.py](esim/camera_simulator.py)) integrates intensity over an exposure window to synthesize motion-blurred conventional frames.
-- **`esim.cli`** ([esim/cli.py](esim/cli.py)) wires the three together into the `python -m esim.cli` command-line tool.
+- **`esim.cli`** ([esim/cli.py](esim/cli.py)) wires the image sequence input together with the event/camera simulators into the `python -m esim.cli` command-line tool.
+- **`esim.event_frames`** ([esim/event_frames.py](esim/event_frames.py)) converts an event stream into a timestamped PNG event-frame sequence.
+- **`esim.event_frames_from_camera`** ([esim/event_frames_from_camera.py](esim/event_frames_from_camera.py)) reconstructs pseudo-events from a webcam stream in real time for demo purposes.
 - **`esim.writers`** ([esim/writers.py](esim/writers.py)) and **`esim.viz`** ([esim/viz.py](esim/viz.py)) handle output I/O and visualization.
 
 ## Repository layout
 
 | Path | Contents |
 | --- | --- |
-| [`esim/`](esim) | The simulator package: types, event/camera simulators, data provider, CLI, writers, visualization |
-| [`tests/`](tests) | Unit and end-to-end tests (`unittest`) |
-| [`tools/`](tools) | Standalone scripts: synthetic test-sequence generator, `images.csv` builder, video frame extractor |
-| [`requirements.txt`](requirements.txt) | The three runtime dependencies |
+| [`esim/`](esim) | The simulator package: types, event/camera simulators, path-based image input, CLI, writers, event-frame generation, and visualization |
+| [`tests/`](tests) | Unit and end-to-end tests (`unittest` / `pytest`) |
+| [`tools/`](tools) | Standalone scripts: synthetic test-sequence generator, `images.csv` builder, video frame extractor, event-center analysis, and PCA tracking utilities |
+| [`requirements.txt`](requirements.txt) | Runtime dependencies |
+| [`doc/`](doc) | Additional notes and walkthroughs, including video conversion examples |
 
 ## Requirements
 
@@ -88,7 +95,7 @@ seq/
 1000000,frame_000001.png
 ```
 
-Two helpers are provided:
+Several helper scripts are provided:
 
 - **`tools/generate_stamps_file.py`** builds `images.csv` for a folder of images you already have, at a fixed frame rate:
   ```bash
@@ -101,6 +108,14 @@ Two helpers are provided:
 - **`tools/prepare_video.py`** extracts frames from a video file (`.mp4` and other OpenCV-decodable formats) and writes the matching `images.csv`:
   ```bash
   python tools/prepare_video.py -i video/video.mp4 -o video_input
+  ```
+- **`tools/calculate_centers.py`** groups events into time bins and plots the per-bin barycenter (center of mass) for each frame sequence:
+  ```bash
+  python tools/calculate_centers.py --npz video_out/events.npz --fps 60 --first-events 50 --baricenter-frames ./baricenter_frames
+  ```
+- **`tools/calculate_centers_PCA.py`** performs a PCA-based center estimate and overlays the principal axes on the event cloud for each time bin:
+  ```bash
+  python tools/calculate_centers_PCA.py --npz video_out/events.npz --fps 60 --first-events 50 --PCA-frames ./pca_frames
   ```
   See [doc/converter_video.md](doc/converter_video.md) (in Portuguese) for the full video-to-event-frames walkthrough.
 
@@ -149,6 +164,16 @@ video_out/
 └── frames/             # blurred frames + images.csv (omit with --no-blurred-frames)
 ```
 
+## Live pseudo-event demo
+
+A lightweight webcam demo is included for inspecting event-like behavior in real time without a precomputed image sequence:
+
+```bash
+python -m esim.event_frames_from_camera --camera 0 --width 640 --height 480 --on-threshold 0.2 --off-threshold 0.2 --window-ms 50 --refractory-ms 5
+```
+
+This opens a side-by-side window showing the live camera feed on the left and a pseudo-event reconstruction on the right. It is intended as a visualization/debugging aid rather than a full event-camera simulation pipeline.
+
 ## Visualizing results
 
 ```bash
@@ -160,8 +185,7 @@ This renders the accumulated event image (blue = net ON, red = net OFF) next to 
 
 ![alt text](accumulated_events.png)
 
-To convert an event stream into an event-frame sequence (blue = ON, red = OFF),
-accumulating events in fixed windows:
+To convert an event stream into an event-frame sequence (green = ON, red = OFF), accumulating events in fixed windows:
 
 ```bash
 python -m esim.event_frames video_out/events.npz --output video_out/event_frames --window-ms 10
