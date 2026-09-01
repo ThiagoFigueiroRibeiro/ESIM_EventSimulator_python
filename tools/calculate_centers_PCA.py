@@ -69,10 +69,10 @@ def pca_center_2d(x, y):
     """
     Compute a PCA-based center:
       1) project points into PCA coordinates
-      2) take midpoint of the min/max extent along PC1 and PC2
+      2) take the median along PC1 and PC2
       3) map back to original coordinates
 
-    This gives a center aligned with the PCA axes, instead of the barycenter.
+    This gives a robust center aligned with the PCA axes.
     """
     pts = np.column_stack([x, y])
     mu, vals, vecs = pca_2d(x, y)
@@ -80,10 +80,10 @@ def pca_center_2d(x, y):
     # Coordinates in PCA basis
     coords = (pts - mu) @ vecs  # shape: (N, 2)
 
-    # Midpoint of the extent in PCA coordinates
+    # Median in PCA coordinates
     center_pc = np.array([
-        0.5 * (coords[:, 0].min() + coords[:, 0].max()),  # along PC1
-        0.5 * (coords[:, 1].min() + coords[:, 1].max()),  # along PC2
+        np.median(coords[:, 0]),  # along PC1
+        np.median(coords[:, 1]),  # along PC2
     ])
 
     # Back to original space
