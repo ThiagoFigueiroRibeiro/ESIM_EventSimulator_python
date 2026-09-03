@@ -24,7 +24,7 @@ In practice this means: **you supply the images** (rendered however you like, or
 
 - Faithful port of the C++ event model: log- or linear-intensity thresholding, separate positive/negative contrast thresholds (C+/C-), additive Gaussian noise on the thresholds, and a per-pixel refractory period
 - Motion-blurred frame synthesis via a finite exposure time, alongside the event stream
-- Simple folder-based input (`images.csv` + image files) and file-based output (`.npz` / `.txt` events, PNG frame sequence)
+- Simple folder-based input (`images.csv` + image files) and file-based output (`.npz` events, PNG frame sequence)
 - A small, dependency-light Python API (`esim.EventSimulator`, `esim.CameraSimulator`, `esim.EventSimConfig`) usable outside the CLI
 - Visualization helpers for accumulated event frames and event-rate plots (`esim.viz`)
 - Event-frame export from an event stream (`esim.event_frames`) for visualization or downstream processing
@@ -34,7 +34,7 @@ In practice this means: **you supply the images** (rendered however you like, or
 ## Architecture
 
 ```text
-images.csv + frames ──▶ FolderImageSource ──▶ EventSimulator ──▶ events.npz / events.txt
+images.csv + frames ──▶ FolderImageSource ──▶ EventSimulator ──▶ events.npz
                                           ├──▶ CameraSimulator ──▶ frames/ (blurred PNGs)
                                           ├──▶ Viz helpers ──▶ event summary plots
                                           └──▶ Event-frame exporter ──▶ PNG sequence
@@ -54,7 +54,7 @@ images.csv + frames ──▶ FolderImageSource ──▶ EventSimulator ──�
 | --- | --- |
 | [`esim/`](esim) | The simulator package: types, event/camera simulators, path-based image input, CLI, writers, event-frame generation, and visualization |
 | [`tests/`](tests) | Unit and end-to-end tests (`unittest` / `pytest`) |
-| [`tools/`](tools) | Standalone scripts: synthetic test-sequence generator, `images.csv` builder, video frame extractor, event-center analysis, and PCA tracking utilities |
+| [`tools/`](tools) | Standalone scripts: synthetic test-sequence generator, `images.csv` builder, video frame extractor, and propeller angular-velocity analysis |
 | [`requirements.txt`](requirements.txt) | Runtime dependencies |
 | [`doc/`](doc) | Additional notes and walkthroughs, including video conversion examples |
 
@@ -109,15 +109,13 @@ Several helper scripts are provided:
   ```bash
   python tools/prepare_video.py -i video/video.mp4 -o video_input
   ```
-- **`tools/calculate_centers.py`** groups events into time bins and plots the per-bin barycenter (center of mass) for each frame sequence:
+- **`tools/calculate_angular_velocity_propeller.py`** estimates propeller angle and angular velocity using either barycenter or PCA tracking:
   ```bash
-  python tools/calculate_centers.py --npz video_out/events.npz --fps 60 --first-events 50 --baricenter-frames ./baricenter_frames
+  python tools/calculate_angular_velocity_propeller.py --npz propeller_events.npz --fps 240 --first_events 200 --tracking_method pca
   ```
-- **`tools/calculate_centers_PCA.py`** performs a PCA-based center estimate and overlays the principal axes on the event cloud for each time bin:
-  ```bash
-  python tools/calculate_centers_PCA.py --npz video_out/events.npz --fps 60 --first-events 50 --PCA-frames ./pca_frames
-  ```
-  See [doc/converter_video.md](doc/converter_video.md) (in Portuguese) for the full video-to-event-frames walkthrough.
+  The script expects timestamps in microseconds, while `esim.cli` writes event timestamps in
+  nanoseconds. Convert the `t` array before using this analysis script on simulator output.
+- See [doc/converter_video.md](doc/converter_video.md) (in Portuguese) for the video-to-event-frames walkthrough.
 
 ## Running the simulator
 
@@ -150,7 +148,6 @@ python -m esim.cli @cfg/my_run.conf
 | `--random-seed` | — | Seed for the threshold noise (nondeterministic if unset) |
 | `--exposure-time-ms` | `10.0` | Exposure time used to synthesize motion blur |
 | `--no-blurred-frames` | off | Skip motion-blurred frame output entirely |
-| `--no-txt` | off | Skip the `events.txt` export (still writes `events.npz`) |
 | `--quiet` | off | Suppress progress output |
 
 `--contrast-threshold-sigma-pos/neg` default to `0` here rather than the original's `0.021`, matching every configuration the original ESIM ships with: threshold noise starves the event stream when the per-frame intensity step is much smaller than the noise itself.
@@ -160,9 +157,11 @@ python -m esim.cli @cfg/my_run.conf
 ```text
 video_out/
 ├── events.npz          # x, y, t (ns), pol — see esim.writers.load_events_npz
-├── events.txt          # "t x y pol" per line, t in seconds (omit with --no-txt)
 └── frames/             # blurred frames + images.csv (omit with --no-blurred-frames)
 ```
+
+The text format is available through `esim.writers.save_events_txt` when an external tool
+requires one event per line as `t x y pol`, with `t` in seconds.
 
 ## Live pseudo-event demo
 
@@ -201,7 +200,7 @@ This uses:
 
 - `window_ms = 1000 / (2 * fps)`
 
-So for `25 fps`, the window becomes `20 ms`.
+So for `25 fps`, the window becomes `1/25 ms` or `20 ms`.
 
 This writes numbered PNGs plus an `images.csv` timestamp index. Use a shorter window for finer temporal detail or a longer one to accumulate more events per image.
 
@@ -227,6 +226,9 @@ for stamp_ns, image in my_image_sequence:       # image: 2D array in [0, 1]
     events = sim.image_callback(image, stamp_ns)  # structured array, esim.EVENT_DTYPE
     frame = camera.image_callback(image, stamp_ns)  # None until one exposure window is filled
 ```
+
+Events use the fields `x`, `y`, `t`, and `pol`; timestamps are integer nanoseconds and
+polarity is `True` for ON events and `False` for OFF events.
 
 ## Running the tests
 

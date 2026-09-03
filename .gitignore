@@ -17,6 +17,7 @@ env/
 /resultado_video*/
 /.publish/
 /.codex_test_tmp/
+/images_videos/
 
 # Operating-system files
 .DS_Store
