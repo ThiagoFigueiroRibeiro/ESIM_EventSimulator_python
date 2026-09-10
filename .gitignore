@@ -18,9 +18,7 @@ env/
 /.publish/
 /.codex_test_tmp/
 /images_videos/
-/00_metronome/
-/00_propeller/
-
+/datasets/
 
 # Operating-system files
 .DS_Store
