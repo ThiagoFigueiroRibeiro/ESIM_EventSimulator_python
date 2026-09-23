@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 import argparse
 import os
@@ -6,7 +7,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch
 from tqdm import tqdm
-
 
 # -----------------------------
 # IO
@@ -51,115 +51,41 @@ def load_events(npz_path):
 
 
 # -----------------------------
-# Geometry / PCA
+# Geometry / angles
 # -----------------------------
-def pca_2d(x, y):
-    """
-    Returns:
-      mu (2,), vals (2,), vecs (2,2)
-
-    vecs[:, 0] = PC1 direction
-    vecs[:, 1] = PC2 direction
-    vals sorted descending
-    """
+def centroid_2d(x, y):
     pts = np.column_stack([x, y])
-    mu = pts.mean(axis=0)
-    xc = pts - mu
-
-    C = (xc.T @ xc) / max(len(pts), 1)
-    vals, vecs = np.linalg.eigh(C)  # ascending
-    order = np.argsort(vals)[::-1]   # descending
-    vals = vals[order]
-    vecs = vecs[:, order]
-    return mu, vals, vecs
+    return pts.mean(axis=0)
 
 
-def pca_center_2d(x, y):
-    """
-    Compute a PCA-based center:
-      1) project points into PCA coordinates
-      2) take the median along PC1 and PC2
-      3) map back to original coordinates
-    """
-    pts = np.column_stack([x, y])
-    mu, vals, vecs = pca_2d(x, y)
-
-    coords = (pts - mu) @ vecs
-    center_pc = np.array([
-        np.median(coords[:, 0]),
-        np.median(coords[:, 1]),
-    ])
-
-    center = mu + center_pc @ vecs.T
-    return center, mu, vals, vecs
-
-
-def estimate_global_center(x, y, method="pca_center"):
-    """
-    Estimate the global center once and reuse it.
-    """
+def estimate_global_center(x, y, method="mean"):
     method = method.lower()
-
     if method == "mean":
         return float(np.mean(x)), float(np.mean(y))
     elif method == "median":
         return float(np.median(x)), float(np.median(y))
-    elif method == "pca_center":
-        center, _, _, _ = pca_center_2d(x, y)
-        return float(center[0]), float(center[1])
     else:
         raise ValueError(f"Unknown center method: {method}")
 
 
-def principal_axis_angle_from_vec(v):
+def angle_from_origin_signed(px, py, ox=320.0, oy=320.0):
     """
-    Convert a 2D vector to a signed angle in image coordinates.
-    Here we use atan2(-vy, vx) to match the image convention.
+    Signed angle in image coordinates, matching code 1's convention:
+      angle = atan2(oy - py, px - ox)
+
+    This returns a value in (-pi, pi].
     """
-    return float(np.arctan2(-v[1], v[0]))
+    return float(np.arctan2(oy - py, px - ox))
 
 
 def wrap_to_pi(theta):
-    """Wrap angle to (-pi, pi]."""
     return float((theta + np.pi) % (2 * np.pi) - np.pi)
 
 
 def unwrap_continuous_angle(theta_obs, prev_theta=None):
-    """
-    Standard 2*pi unwrapping for signed angles.
-    """
     if prev_theta is None or not np.isfinite(prev_theta):
         return float(theta_obs)
     return float(prev_theta + wrap_to_pi(theta_obs - prev_theta))
-
-
-def choose_axis_sign(v1, prev_v1_signed=None, origin_x=None, origin_y=None,
-                     local_cx=None, local_cy=None):
-    """
-    Resolve PCA sign ambiguity.
-
-    Priority:
-      1) If a previous signed axis exists, keep continuity with it.
-      2) Otherwise use the vector from global origin to local centroid.
-      3) Otherwise keep the raw PCA sign.
-    """
-    # 1) Temporal continuity wins
-    if prev_v1_signed is not None and np.all(np.isfinite(prev_v1_signed)):
-        return v1 if np.dot(v1, prev_v1_signed) >= 0 else -v1
-
-    # 2) First valid frame: use a spatial reference if available
-    if (
-        origin_x is not None and origin_y is not None
-        and local_cx is not None and local_cy is not None
-    ):
-        centroid_vec = np.array([local_cx - origin_x, local_cy - origin_y], dtype=float)
-        n = np.linalg.norm(centroid_vec)
-        if n > 1e-12:
-            centroid_vec /= n
-            return v1 if np.dot(v1, centroid_vec) >= 0 else -v1
-
-    # 3) Fallback
-    return v1
 
 
 def draw_single_arrow(ax, p0, p1, color, lw=3, mutation_scale=14):
@@ -199,7 +125,6 @@ def estimate_period_guess_fft(t_ms, y):
     if span <= 0:
         return np.nan
 
-    # Detrend linearly before FFT
     try:
         p = np.polyfit(t_ms, y, 1)
         y_detrended = y - np.polyval(p, t_ms)
@@ -239,8 +164,6 @@ def fit_oscillatory_motion(t_ms, theta_rad):
       theta(x) = a + b*t + c*sin(wt) + d*cos(wt)
 
     Then convert c,d to A,phi.
-
-    Returns a dict with fit functions and equation strings, or None on failure.
     """
     t_ms = np.asarray(t_ms, dtype=float)
     theta_rad = np.asarray(theta_rad, dtype=float)
@@ -262,9 +185,6 @@ def fit_oscillatory_motion(t_ms, theta_rad):
     if span <= 0:
         return None
 
-    # Candidate periods:
-    # - broad logarithmic sweep
-    # - local neighborhood around FFT estimate if available
     T_min = max(span / 100.0, 1e-6)
     T_max = max(span * 10.0, T_min * 10.0)
 
@@ -282,7 +202,6 @@ def fit_oscillatory_motion(t_ms, theta_rad):
 
     best = None
 
-    # Solve linear least squares for each candidate period
     for T in candidates:
         w = 2.0 * np.pi / T
         s = np.sin(w * x)
@@ -311,9 +230,8 @@ def fit_oscillatory_motion(t_ms, theta_rad):
     T = best["T"]
     w = 2.0 * np.pi / T
 
-    # Convert c*sin(wt) + d*cos(wt) to A*sin(wt + phi)
     A = float(np.hypot(c_sin, d_cos))
-    phi = float(np.arctan2(d_cos, c_sin))  # because A sin(wt+phi) = A cos(phi) sin + A sin(phi) cos
+    phi = float(np.arctan2(d_cos, c_sin))
 
     def theta_fit_func(x_ms_in):
         x_ms_in = np.asarray(x_ms_in, dtype=float)
@@ -352,18 +270,16 @@ def fit_oscillatory_motion(t_ms, theta_rad):
 # -----------------------------
 # Plotting
 # -----------------------------
-def save_pca_frame(
+def save_centroid_frame(
     out_path,
     xs,
     ys,
-    local_cx,
-    local_cy,
-    global_origin_x,
-    global_origin_y,
-    v1,
-    v2,
-    half_len_pc1,
-    half_len_pc2,
+    centroid_x,
+    centroid_y,
+    prev_centroid_x,
+    prev_centroid_y,
+    origin_x,
+    origin_y,
     theta_obs,
     theta_unwrapped,
     omega_rad_ms,
@@ -385,37 +301,36 @@ def save_pca_frame(
     if xs is not None and len(xs) > 0 and plot_events:
         ax.scatter(xs, ys, s=events_marker_size, c="gray", alpha=0.8, label="events")
 
-    # Global propeller/metronome pivot center
+    # Global origin
     ax.scatter(
-        [global_origin_x], [global_origin_y],
-        s=80, c="red", marker="x", linewidths=2.5, label="global center"
+        [origin_x], [origin_y],
+        s=80, c="red", marker="x", linewidths=2.5, label="origin"
     )
 
-    # Local centroid / anchor for PCA visualization
-    if local_cx is not None and local_cy is not None:
-        ax.scatter([local_cx], [local_cy], s=70, c="blue", marker="o", label="bin centroid")
+    # Previous centroid and motion arrow
+    have_current = centroid_x is not None and centroid_y is not None
+    have_prev = prev_centroid_x is not None and prev_centroid_y is not None
 
+    if have_prev:
+        ax.scatter([prev_centroid_x], [prev_centroid_y], s=55, c="orange", marker="o", label="previous centroid")
+
+    if have_current:
+        ax.scatter([centroid_x], [centroid_y], s=70, c="blue", marker="o", label="centroid")
+
+        # Arrow from origin to current centroid
         ax.annotate(
             "",
-            xy=(local_cx, local_cy),
-            xytext=(global_origin_x, global_origin_y),
+            xy=(centroid_x, centroid_y),
+            xytext=(origin_x, origin_y),
             arrowprops=dict(arrowstyle="->", color="blue", lw=2)
         )
 
-        if v1 is not None and v2 is not None and half_len_pc1 is not None and half_len_pc2 is not None:
-            p1_start = (local_cx, local_cy)
-            p1_end = (local_cx + half_len_pc1 * v1[0], local_cy + half_len_pc1 * v1[1])
+        # Arrow showing centroid movement from previous timestep
+        if have_prev:
             draw_single_arrow(
-                ax, p1_start, p1_end,
-                color="red",
-                lw=arrow_lw,
-                mutation_scale=arrow_mutation_scale
-            )
-
-            p2_start = (local_cx, local_cy)
-            p2_end = (local_cx + half_len_pc2 * v2[0], local_cy + half_len_pc2 * v2[1])
-            draw_single_arrow(
-                ax, p2_start, p2_end,
+                ax,
+                (prev_centroid_x, prev_centroid_y),
+                (centroid_x, centroid_y),
                 color="green",
                 lw=arrow_lw,
                 mutation_scale=arrow_mutation_scale
@@ -441,7 +356,7 @@ def save_pca_frame(
                 f"bin = {bin_id}\n"
                 f"events = {n_events}\n"
                 f"t = {t_center_ms:.6f} ms\n"
-                f"No valid PCA measurement",
+                f"No valid angle",
                 transform=ax.transAxes,
                 va="top",
                 ha="left",
@@ -454,7 +369,7 @@ def save_pca_frame(
             f"bin = {bin_id}\n"
             f"events = {n_events}\n"
             f"t = {t_center_ms:.6f} ms\n"
-            f"No valid events",
+            f"No valid centroid",
             transform=ax.transAxes,
             va="top",
             ha="left",
@@ -480,11 +395,7 @@ def save_pca_frame(
 # -----------------------------
 # Tracking pipeline
 # -----------------------------
-def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
-    """
-    Split all events into equal-count bins.
-    For each bin, use only the first `analysis_events_per_bin` events.
-    """
+def run_centroid_tracking(raw_time, x, y, args, xlim, ylim):
     global_cx, global_cy = estimate_global_center(x, y, method=args.center_method)
 
     if args.origin_x is None:
@@ -492,34 +403,20 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
     if args.origin_y is None:
         args.origin_y = global_cy
 
-    # Skip tracking frames entirely when no_plot_events is set
-    generate_tracking_frames = bool(args.plot_events)
-    if generate_tracking_frames:
-        tracking_frames_dir = (
-            os.path.join(args.frames_base_dir, "tracking_frames_pca")
-            if args.frames_base_dir else "tracking_frames_pca"
-        )
-        os.makedirs(tracking_frames_dir, exist_ok=True)
-        print(f"Saving tracking frames to: {tracking_frames_dir}")
-    else:
-        tracking_frames_dir = None
-        print("Skipping tracking frame generation because --no_plot_events was set.")
-
-    print(f"Global center used as origin: ({args.origin_x:.3f}, {args.origin_y:.3f})")
-    print(f"Center estimation method: {args.center_method}")
-    print(f"Number of bins: {args.num_bins}")
-    print(f"Events used per bin (max): {args.analysis_events_per_bin}")
-    print(f"Minimum points for PCA: {args.min_points_for_pca}")
+    tracking_frames_dir = (
+        os.path.join(args.frames_base_dir, "tracking_frames_centroid")
+        if args.frames_base_dir else "tracking_frames_centroid"
+    )
+    os.makedirs(tracking_frames_dir, exist_ok=True)
+    print(f"Saving tracking frames to: {tracking_frames_dir}")
 
     n_events_total = len(x)
     if args.num_bins <= 0:
         raise ValueError("--num_bins must be > 0")
 
-    # Equal-count bin edges across the full event stream
     bin_edges = np.linspace(0, n_events_total, args.num_bins + 1, dtype=int)
     n_bins = args.num_bins
 
-    # Per-bin storage
     bin_ids = np.arange(n_bins, dtype=int)
     start_event_idx = np.full(n_bins, -1, dtype=int)
     end_event_idx = np.full(n_bins, -1, dtype=int)
@@ -529,36 +426,31 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
     window_t_start_ms = np.full(n_bins, np.nan, dtype=float)
     window_t_end_ms = np.full(n_bins, np.nan, dtype=float)
 
-    local_cx = np.full(n_bins, np.nan, dtype=float)
-    local_cy = np.full(n_bins, np.nan, dtype=float)
+    centroid_xs = np.full(n_bins, np.nan, dtype=float)
+    centroid_ys = np.full(n_bins, np.nan, dtype=float)
 
-    pca_x_full = np.full(n_bins, np.nan, dtype=float)
-    pca_y_full = np.full(n_bins, np.nan, dtype=float)
-
-    theta_obs = np.full(n_bins, np.nan, dtype=float)
-    theta_unwrapped = np.full(n_bins, np.nan, dtype=float)
+    angle_obs = np.full(n_bins, np.nan, dtype=float)
+    angle_unwrapped = np.full(n_bins, np.nan, dtype=float)
 
     omega_rad_s = np.full(n_bins, np.nan, dtype=float)
     omega_rad_ms = np.full(n_bins, np.nan, dtype=float)
 
-    eigval1 = np.full(n_bins, np.nan, dtype=float)
-    eigval2 = np.full(n_bins, np.nan, dtype=float)
-
     valid_measurement = np.zeros(n_bins, dtype=int)
     propagated_only = np.zeros(n_bins, dtype=int)
 
-    prev_v1_signed = None
     prev_theta = None
     prev_omega = None
     prev_time_s = None
+    prev_centroid_x = None
+    prev_centroid_y = None
 
-    frame_data = [] if generate_tracking_frames else None
+    frame_data = []
 
     for i in range(n_bins):
         bin_s = int(bin_edges[i])
         bin_e = int(bin_edges[i + 1])
 
-        # Use only the first N events of this bin
+        # Equal-count bins, but use only the first N events inside each bin
         e_use = min(bin_s + args.analysis_events_per_bin, bin_e)
 
         start_event_idx[i] = bin_s
@@ -571,189 +463,116 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
         n_events = len(xs)
         n_events_per_bin[i] = n_events
 
+        centroid_valid = False
+        cx = None
+        cy = None
+        t_center_s = np.nan
+
         if n_events > 0:
-            window_t_s = float(np.mean(ts))
-            window_t_ms[i] = window_t_s * 1e3
+            t_center_s = float(np.mean(ts))
+            window_t_ms[i] = t_center_s * 1e3
             window_t_start_ms[i] = float(ts[0] * 1e3)
             window_t_end_ms[i] = float(ts[-1] * 1e3)
 
-            lc_x = float(np.mean(xs))
-            lc_y = float(np.mean(ys))
-            local_cx[i] = lc_x
-            local_cy[i] = lc_y
-        else:
-            window_t_s = np.nan
-            lc_x = None
-            lc_y = None
+            cx = float(np.mean(xs))
+            cy = float(np.mean(ys))
+            centroid_xs[i] = cx
+            centroid_ys[i] = cy
+            centroid_valid = True
+            valid_measurement[i] = 1
 
-        if n_events >= args.min_points_for_pca:
-            center, mu, vals, vecs = pca_center_2d(xs, ys)
-
-            v1 = vecs[:, 0].copy()
-            v2 = vecs[:, 1].copy()
-
-            # Enforce sign continuity with the previous bin
-            v1_signed = choose_axis_sign(
-                v1,
-                prev_v1_signed=prev_v1_signed,
-                origin_x=args.origin_x,
-                origin_y=args.origin_y,
-                local_cx=lc_x,
-                local_cy=lc_y
-            )
-
-            sign = 1.0 if np.dot(v1_signed, v1) >= 0 else -1.0
-            v1_signed = sign * v1
-            v2_signed = sign * v2  # keep PCA basis consistent for plotting
-
-            prev_v1_signed = v1_signed.copy()
-
-            if args.pca_len_mode == "range":
-                base = max(xlim[1] - xlim[0], ylim[1] - ylim[0])
-                half_len_pc1 = args.pca_len_scale * base * 0.5 * args.pc1_boost
-                half_len_pc2 = args.pca_len_scale * base * 0.5 * args.pc2_boost
-            else:
-                half_len_pc1 = args.pca_len_scale * float(np.sqrt(vals[0] + 1e-12)) * args.pc1_boost
-                half_len_pc2 = args.pca_len_scale * float(np.sqrt(vals[1] + 1e-12)) * args.pc2_boost
-
-            theta_o = principal_axis_angle_from_vec(v1_signed)
+            theta_o = angle_from_origin_signed(cx, cy, args.origin_x, args.origin_y)
 
             if prev_theta is None or not np.isfinite(prev_theta):
                 theta_u = float(theta_o)
                 omega_s = np.nan
             else:
-                dt = window_t_s - prev_time_s if prev_time_s is not None and np.isfinite(prev_time_s) else np.nan
+                dt = t_center_s - prev_time_s if prev_time_s is not None and np.isfinite(prev_time_s) else np.nan
                 theta_u = unwrap_continuous_angle(theta_o, prev_theta)
-
                 if np.isfinite(dt) and dt > 0:
                     omega_s = (theta_u - prev_theta) / dt
                 else:
                     omega_s = np.nan
 
-            valid_measurement[i] = 1
-            theta_obs[i] = theta_o
-            theta_unwrapped[i] = theta_u
+            angle_obs[i] = theta_o
+            angle_unwrapped[i] = theta_u
             omega_rad_s[i] = omega_s
             omega_rad_ms[i] = omega_s * 1e-3 if np.isfinite(omega_s) else np.nan
-            eigval1[i] = float(vals[0])
-            eigval2[i] = float(vals[1])
-
-            pca_x_full[i] = float(center[0])
-            pca_y_full[i] = float(center[1])
 
             prev_theta = theta_u
             prev_omega = omega_s if np.isfinite(omega_s) else prev_omega
-            prev_time_s = window_t_s
-
-            if generate_tracking_frames:
-                frame_data.append({
-                    "bin_id": i,
-                    "xs": xs,
-                    "ys": ys,
-                    "local_cx": lc_x,
-                    "local_cy": lc_y,
-                    "v1": v1_signed,
-                    "v2": v2_signed,
-                    "half_len_pc1": half_len_pc1,
-                    "half_len_pc2": half_len_pc2,
-                    "theta_obs": theta_o,
-                    "theta_unwrapped": theta_u,
-                    "omega_ms": omega_rad_ms[i],
-                    "t_start_ms": window_t_start_ms[i],
-                    "t_end_ms": window_t_end_ms[i],
-                    "t_center_ms": window_t_ms[i],
-                    "n_events": n_events,
-                    "valid": True,
-                })
+            prev_time_s = t_center_s
+            prev_centroid_x = cx
+            prev_centroid_y = cy
         else:
-            # Too few points for PCA
+            # Missing bin
             if (
                 args.propagate_missing
                 and prev_theta is not None
                 and np.isfinite(prev_theta)
                 and prev_time_s is not None
                 and np.isfinite(prev_time_s)
-                and n_events > 0
             ):
-                dt = window_t_s - prev_time_s
-                if np.isfinite(dt) and dt > 0:
-                    theta_u = prev_theta + (prev_omega if np.isfinite(prev_omega) else 0.0) * dt
-                    omega_s = prev_omega if np.isfinite(prev_omega) else np.nan
-                    propagated_only[i] = 1
+                # Only meaningful if we can estimate dt; here no events -> no reliable timestamp
+                # so we leave it as missing unless you later want bin-center-time propagation.
+                propagated_only[i] = 1
+            theta_u = np.nan
+            omega_s = np.nan
 
-                    theta_unwrapped[i] = theta_u
-                    omega_rad_s[i] = omega_s
-                    omega_rad_ms[i] = omega_s * 1e-3 if np.isfinite(omega_s) else np.nan
+        frame_data.append({
+            "bin_id": i,
+            "xs": xs,
+            "ys": ys,
+            "centroid_x": cx if centroid_valid else None,
+            "centroid_y": cy if centroid_valid else None,
+            "prev_centroid_x": prev_centroid_x if centroid_valid else None,
+            "prev_centroid_y": prev_centroid_y if centroid_valid else None,
+            "angle_obs": angle_obs[i],
+            "angle_unwrapped": angle_unwrapped[i],
+            "omega_ms": omega_rad_ms[i],
+            "t_start_ms": window_t_start_ms[i],
+            "t_end_ms": window_t_end_ms[i],
+            "t_center_ms": window_t_ms[i],
+            "n_events": n_events,
+            "valid": centroid_valid,
+        })
 
-                    prev_theta = theta_u
-                    prev_time_s = window_t_s
-                else:
-                    theta_u = np.nan
-                    omega_s = np.nan
-            else:
-                theta_u = np.nan
-                omega_s = np.nan
+    # Generate tracking frames
+    for fd in tqdm(frame_data, desc="Generating tracking frames", unit="frame"):
+        i = fd["bin_id"]
+        out_path = os.path.join(
+            tracking_frames_dir,
+            f"{args.frame_prefix}_{i:05d}.{args.image_ext}"
+        )
 
-            if generate_tracking_frames:
-                frame_data.append({
-                    "bin_id": i,
-                    "xs": xs,
-                    "ys": ys,
-                    "local_cx": lc_x,
-                    "local_cy": lc_y,
-                    "v1": None,
-                    "v2": None,
-                    "half_len_pc1": None,
-                    "half_len_pc2": None,
-                    "theta_obs": np.nan,
-                    "theta_unwrapped": theta_u,
-                    "omega_ms": omega_rad_ms[i],
-                    "t_start_ms": window_t_start_ms[i],
-                    "t_end_ms": window_t_end_ms[i],
-                    "t_center_ms": window_t_ms[i],
-                    "n_events": n_events,
-                    "valid": False,
-                })
+        save_centroid_frame(
+            out_path=out_path,
+            xs=fd["xs"],
+            ys=fd["ys"],
+            centroid_x=fd["centroid_x"],
+            centroid_y=fd["centroid_y"],
+            prev_centroid_x=fd["prev_centroid_x"],
+            prev_centroid_y=fd["prev_centroid_y"],
+            origin_x=args.origin_x,
+            origin_y=args.origin_y,
+            theta_obs=fd["angle_obs"] if np.isfinite(fd["angle_obs"]) else np.nan,
+            theta_unwrapped=fd["angle_unwrapped"] if np.isfinite(fd["angle_unwrapped"]) else np.nan,
+            omega_rad_ms=fd["omega_ms"] if np.isfinite(fd["omega_ms"]) else np.nan,
+            bin_id=i,
+            t_start_ms=fd["t_start_ms"],
+            t_end_ms=fd["t_end_ms"],
+            t_center_ms=fd["t_center_ms"],
+            n_events=fd["n_events"],
+            xlim=xlim,
+            ylim=ylim,
+            plot_events=args.plot_events,
+            events_marker_size=args.events_marker_size,
+            arrow_lw=args.arrow_lw,
+            arrow_mutation_scale=args.arrow_mutation_scale,
+            dpi=args.dpi
+        )
 
-    # Save frames only if plotting is enabled
-    if generate_tracking_frames:
-        for fd in tqdm(frame_data, desc="Generating tracking frames", unit="frame"):
-            i = fd["bin_id"]
-            out_path = os.path.join(
-                tracking_frames_dir,
-                f"{args.frame_prefix}_{i:05d}.{args.image_ext}"
-            )
-
-            save_pca_frame(
-                out_path=out_path,
-                xs=fd["xs"],
-                ys=fd["ys"],
-                local_cx=fd["local_cx"],
-                local_cy=fd["local_cy"],
-                global_origin_x=args.origin_x,
-                global_origin_y=args.origin_y,
-                v1=fd["v1"],
-                v2=fd["v2"],
-                half_len_pc1=fd["half_len_pc1"],
-                half_len_pc2=fd["half_len_pc2"],
-                theta_obs=fd["theta_obs"] if np.isfinite(fd["theta_obs"]) else np.nan,
-                theta_unwrapped=fd["theta_unwrapped"] if np.isfinite(fd["theta_unwrapped"]) else np.nan,
-                omega_rad_ms=fd["omega_ms"] if np.isfinite(fd["omega_ms"]) else np.nan,
-                bin_id=i,
-                t_start_ms=fd["t_start_ms"],
-                t_end_ms=fd["t_end_ms"],
-                t_center_ms=fd["t_center_ms"],
-                n_events=fd["n_events"],
-                xlim=xlim,
-                ylim=ylim,
-                plot_events=args.plot_events,
-                events_marker_size=args.events_marker_size,
-                arrow_lw=args.arrow_lw,
-                arrow_mutation_scale=args.arrow_mutation_scale,
-                dpi=args.dpi
-            )
-
-    valid_angle = np.isfinite(theta_unwrapped)
+    valid_angle = np.isfinite(angle_unwrapped)
     valid_vel = np.isfinite(omega_rad_ms)
 
     if not np.any(valid_angle):
@@ -765,7 +584,7 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
     # -----------------------------
     fit_result = None
     if args.angular_fit:
-        fit_result = fit_oscillatory_motion(window_t_ms[valid_angle], theta_unwrapped[valid_angle])
+        fit_result = fit_oscillatory_motion(window_t_ms[valid_angle], angle_unwrapped[valid_angle])
         if fit_result is not None:
             print()
             print("Angular fit")
@@ -782,7 +601,7 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
     print("Angular position stats")
     print("----------------------")
     print(f"Valid bins with angle:     {int(np.sum(valid_angle))} / {n_bins}")
-    print(f"Valid PCA measurements:    {int(np.sum(valid_measurement))} / {n_bins}")
+    print(f"Valid centroid measurements: {int(np.sum(valid_measurement))} / {n_bins}")
     print(f"Propagated-only bins:      {int(np.sum(propagated_only))} / {n_bins}")
 
     print()
@@ -821,27 +640,21 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
         n_events_per_bin,
         valid_measurement,
         propagated_only,
-        local_cx,
-        local_cy,
-        pca_x_full,
-        pca_y_full,
-        theta_obs,
-        theta_unwrapped,
+        centroid_xs,
+        centroid_ys,
+        angle_obs,
+        angle_unwrapped,
         omega_rad_s,
         omega_rad_ms,
-        eigval1,
-        eigval2,
     ])
 
     csv_header = (
         "bin,start_event_idx,end_event_idx,"
         "t_start_ms,t_end_ms,t_center_ms,"
         "n_events,valid_measurement,propagated_only,"
-        "bin_centroid_x,bin_centroid_y,"
-        "pca_center_x,pca_center_y,"
-        "theta_obs_rad,theta_unwrapped_rad,"
-        "angular_velocity_rad_s,angular_velocity_rad_ms,"
-        "eigval1,eigval2"
+        "centroid_x,centroid_y,"
+        "angle_obs_rad,angle_unwrapped_rad,"
+        "angular_velocity_rad_s,angular_velocity_rad_ms"
     )
 
     np.savetxt(
@@ -856,8 +669,6 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
             "%d", "%d", "%d",
             "%.10f", "%.10f",
             "%.10f", "%.10f",
-            "%.10f", "%.10f",
-            "%.10e", "%.10e",
             "%.10e", "%.10e"
         ]
     )
@@ -884,7 +695,6 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
     pos_plot_path = os.path.join(args.output_dir, f"angular_position_over_time.{args.image_ext}")
     fig, ax = plt.subplots(figsize=(10, 5))
 
-    # Fit curve behind data
     if fit_result is not None:
         ax.plot(
             fit_t_dense,
@@ -896,40 +706,39 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
             zorder=1
         )
 
-    # Original plot colors preserved
     if np.any(valid_angle):
         ax.plot(
             window_t_ms[valid_angle],
-            theta_unwrapped[valid_angle],
+            angle_unwrapped[valid_angle],
             marker="o",
             linewidth=1.5,
             markersize=3,
             color="purple",
-            label="unwrapped angle",
+            label="unwrapped centroid angle",
             zorder=3
         )
 
-    meas_idx = valid_measurement.astype(bool) & np.isfinite(theta_unwrapped)
+    meas_idx = valid_measurement.astype(bool) & np.isfinite(angle_unwrapped)
     if np.any(meas_idx):
         ax.scatter(
             window_t_ms[meas_idx],
-            theta_unwrapped[meas_idx],
+            angle_unwrapped[meas_idx],
             s=20,
             color="orange",
             alpha=0.8,
-            label="PCA-backed bins",
+            label="measured bins",
             zorder=4
         )
 
-    if np.any(propagated_only.astype(bool)):
-        prop_idx = propagated_only.astype(bool) & np.isfinite(theta_unwrapped)
+    prop_idx = propagated_only.astype(bool) & np.isfinite(angle_unwrapped)
+    if np.any(prop_idx):
         ax.scatter(
             window_t_ms[prop_idx],
-            theta_unwrapped[prop_idx],
+            angle_unwrapped[prop_idx],
             s=20,
             color="gray",
             alpha=0.8,
-            label="propagated-only bins",
+            label="propagated bins",
             zorder=4
         )
 
@@ -956,7 +765,6 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
     vel_plot_path = os.path.join(args.output_dir, f"angular_velocity_over_time.{args.image_ext}")
     fig, ax = plt.subplots(figsize=(10, 5))
 
-    # Fit curve behind data
     if fit_result is not None:
         ax.plot(
             fit_t_dense,
@@ -968,7 +776,6 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
             zorder=1
         )
 
-    # Original colors preserved
     if np.any(valid_vel):
         omega_valid = omega_rad_ms[valid_vel]
         t_valid_ms = window_t_ms[valid_vel]
@@ -1035,7 +842,7 @@ def run_pca_tracking(raw_time, x, y, args, xlim, ylim):
 # -----------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="PCA-based continuous angle tracker using equal-count bins and the first N events per bin."
+        description="Centroid-based continuous angle tracker using equal-count bins and the first N events per bin."
     )
 
     parser.add_argument("--npz", type=str, default="events.npz", help="Path to events.npz")
@@ -1050,13 +857,7 @@ def main():
         "--analysis_events_per_bin",
         type=int,
         default=400,
-        help="Use only the first N events of each bin for PCA/algebra."
-    )
-    parser.add_argument(
-        "--min_points_for_pca",
-        type=int,
-        default=3,
-        help="If fewer than this number of points exist in a bin, PCA is skipped."
+        help="Use only the first N events of each bin for centroid/angle estimation."
     )
 
     parser.add_argument(
@@ -1070,7 +871,7 @@ def main():
         "--frames_base_dir",
         type=str,
         default="",
-        help="Base directory for tracking_frames_pca. Empty means current directory."
+        help="Base directory for tracking_frames_centroid. Empty means current directory."
     )
 
     parser.add_argument("--dpi", type=int, default=200)
@@ -1081,47 +882,12 @@ def main():
     parser.add_argument("--no_plot_events", dest="plot_events", action="store_false", help="Disable event plotting.")
     parser.add_argument("--events_marker_size", type=float, default=8.0)
 
-    parser.add_argument(
-        "--pca_len_mode",
-        type=str,
-        default="sqrt_eig",
-        choices=["range", "sqrt_eig"],
-        help="Scaling mode for PCA arrows."
-    )
-    parser.add_argument(
-        "--pca_len_scale",
-        type=float,
-        default=0.8,
-        help="Global multiplicative factor for PCA arrow lengths."
-    )
-    parser.add_argument(
-        "--pc1_boost",
-        type=float,
-        default=2.5,
-        help="Extra multiplier for PC1 red arrow length."
-    )
-    parser.add_argument(
-        "--pc2_boost",
-        type=float,
-        default=1.0,
-        help="Extra multiplier for PC2 green arrow length."
-    )
-    parser.add_argument(
-        "--arrow_mutation_scale",
-        type=float,
-        default=18.0,
-        help="Arrowhead size."
-    )
-    parser.add_argument(
-        "--arrow_lw",
-        type=float,
-        default=3.0,
-        help="Arrow line width."
-    )
+    parser.add_argument("--arrow_lw", type=float, default=3.0, help="Arrow line width.")
+    parser.add_argument("--arrow_mutation_scale", type=float, default=18.0, help="Arrowhead size.")
 
     parser.add_argument("--show", action="store_true", help="Show figures while generating.")
 
-    # NEW: oscillatory fit
+    # Oscillatory fit
     parser.add_argument(
         "--angular_fit",
         action="store_true",
@@ -1133,8 +899,8 @@ def main():
     parser.add_argument(
         "--center_method",
         type=str,
-        default="pca_center",
-        choices=["pca_center", "mean", "median"],
+        default="mean",
+        choices=["mean", "median"],
         help="How to estimate the global center once."
     )
     parser.add_argument(
@@ -1154,13 +920,13 @@ def main():
         "--propagate_missing",
         action="store_true",
         default=True,
-        help="If a bin lacks enough points for PCA, propagate the state using the previous angular velocity."
+        help="If a bin lacks enough events, propagate state when possible."
     )
     parser.add_argument(
         "--no_propagate_missing",
         dest="propagate_missing",
         action="store_false",
-        help="Disable propagation for bins that lack enough points for PCA."
+        help="Disable propagation for bins that lack enough events."
     )
 
     args = parser.parse_args()
@@ -1169,13 +935,12 @@ def main():
         raise ValueError("--num_bins must be > 0")
     if args.analysis_events_per_bin <= 0:
         raise ValueError("--analysis_events_per_bin must be > 0")
-    if args.min_points_for_pca <= 0:
-        raise ValueError("--min_points_for_pca must be > 0")
 
     raw_time, x, y, keys = load_events(args.npz)
 
     # timestamps are assumed microseconds
     time_s = raw_time * 1e-6
+    time_ms = raw_time * 1e-3
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -1184,10 +949,15 @@ def main():
     y_min = float(np.min(y))
     y_max = float(np.max(y))
 
+    xlim_min = min(x_min, args.origin_x if args.origin_x is not None else x_min)
+    xlim_max = max(x_max, args.origin_x if args.origin_x is not None else x_max)
+    ylim_min = min(y_min, args.origin_y if args.origin_y is not None else y_min)
+    ylim_max = max(y_max, args.origin_y if args.origin_y is not None else y_max)
+
     pad_x = 10.0
     pad_y = 10.0
-    xlim = (x_min - pad_x, x_max + pad_x)
-    ylim = (y_min - pad_y, y_max + pad_y)
+    xlim = (xlim_min - pad_x, xlim_max + pad_x)
+    ylim = (ylim_min - pad_y, ylim_max + pad_y)
 
     print(f"Loaded keys: time={keys[0]}, x={keys[1]}, y={keys[2]}")
     print(f"Saving outputs to: {args.output_dir}")
@@ -1195,7 +965,6 @@ def main():
     print(f"Timestamp display: milliseconds (x1e-3)")
     print(f"Number of bins: {args.num_bins}")
     print(f"Events used per bin (max): {args.analysis_events_per_bin}")
-    print(f"Minimum points for PCA: {args.min_points_for_pca}")
     print(f"Center estimation method: {args.center_method}")
     print(f"Angular fit enabled: {args.angular_fit}")
 
@@ -1213,7 +982,7 @@ def main():
     if last_ts_s <= first_ts_s:
         raise ValueError("Invalid timestamp range: last_ts must be greater than first_ts.")
 
-    run_pca_tracking(raw_time, x, y, args, xlim, ylim)
+    run_centroid_tracking(raw_time, x, y, args, xlim, ylim)
 
     print("Done.")
 

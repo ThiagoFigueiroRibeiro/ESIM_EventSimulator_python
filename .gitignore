@@ -19,6 +19,7 @@ env/
 /.codex_test_tmp/
 /images_videos/
 /datasets/
+/tracking_output/
 
 # Operating-system files
 .DS_Store
