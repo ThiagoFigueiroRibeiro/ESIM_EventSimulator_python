@@ -68,7 +68,7 @@ images.csv + frames ──▶ FolderImageSource ──▶ EventSimulator ──�
 ## Installation
 
 ```bash
-conda create -n esim python=3.10
+conda create -n esim python=3.12
 conda activate esim
 pip install -r requirements.txt
 ```
